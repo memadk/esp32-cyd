@@ -1,0 +1,58 @@
+// Tail the receiver's per-board files and ship them to Loki with labels board / level / tag.
+// Line format: "YYYY-mm-dd HH:MM:SS <ip> I (<ms>) ARDUINO: [tag] message"  or  "YYYY-mm-dd HH:MM:SS <ip> BOOT ..."
+local.file_match "boards" {
+  path_targets = [{ __path__ = "/var/log/esp32-boards/*.log" }]
+}
+
+discovery.relabel "boards" {
+  targets = local.file_match.boards.targets
+  rule {
+    source_labels = ["__path__"]
+    regex         = ".*/([^/]+)\\.log"
+    target_label  = "board"
+  }
+}
+
+loki.source.file "boards" {
+  targets       = discovery.relabel.boards.output
+  forward_to    = [loki.process.boards.receiver]
+  tail_from_end = false
+}
+
+loki.process "boards" {
+  forward_to = [loki.write.local.receiver]
+
+  stage.regex {
+    expression = "^(?P<ts>\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d) (?P<ip>\\S+) (?:(?P<lvl>[IWEDV]) \\((?P<ms>\\d+)\\) (?P<src>\\S+): )?(?P<msg>.*)$"
+  }
+  stage.regex {
+    source     = "msg"
+    expression = "^(?:BOOT(?P<boot> )|\\[(?P<tag>[a-z][a-z0-9_-]*)\\])"
+  }
+  stage.template {
+    source   = "level"
+    template = "{{ if eq .lvl \"E\" }}error{{ else if eq .lvl \"W\" }}warn{{ else if eq .lvl \"D\" }}debug{{ else if eq .lvl \"V\" }}trace{{ else if .boot }}boot{{ else }}info{{ end }}"
+  }
+  stage.timestamp {
+    source            = "ts"
+    format            = "2006-01-02 15:04:05"
+    location          = "Europe/Copenhagen"
+    action_on_failure = "fudge"
+  }
+  stage.labels {
+    values = { level = "", tag = "" }
+  }
+  stage.label_drop {
+    values = ["filename"]
+  }
+}
+
+loki.write "local" {
+  endpoint {
+    url                 = "http://127.0.0.1:3100/loki/api/v1/push"
+    // Keep retrying for hours if Loki is down: a dropped batch would leave a hole, and once newer lines of a
+    // stream are in, Loki rejects anything older than ~1 h for that stream ("too far behind").
+    max_backoff_period  = "5m"
+    max_backoff_retries = 200
+  }
+}

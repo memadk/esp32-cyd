@@ -1,0 +1,13 @@
+[Unit]
+Description=ESP32 board UDP log receiver (tools/logserver.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/esp32-logserver/logserver.py 5514 /var/log/esp32-boards
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
